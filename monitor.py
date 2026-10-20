@@ -19,9 +19,12 @@ from typing import Set, List, Dict, Optional
 
 # 要监听的账号（不加 @，最多建议 50 个）
 ACCOUNTS = [
-    "elonmusk",
-    "OpenAI",
-    "xai",
+    "eloscapeHQ",
+    "kalosfun",
+    "ChainzyLabs",
+    "SignalFam",
+    "ThePhunky1",
+    "Bunnypadfun",
     # 继续添加你的账号...
 ]
 
