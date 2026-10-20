@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 X (Twitter) 账号监听 → Discord
-使用 GitHub Actions + Nitter RSS，完全免费
-方法2版本：会推送当前最新推文（用于测试）
+正式版：只推送新推文，不刷历史
 """
 
 import os
@@ -19,16 +18,14 @@ from email.utils import parsedate_to_datetime
 
 # ==================== 配置区 ====================
 
-# 要监听的账号（不加 @）
 ACCOUNTS = [
     "eloscapeHQ",
     "kalosfun",
     "ChainzyLabs",
     "SignalFam",
-    # 在这里继续添加你的账号...
+    # 继续添加账号...
 ]
 
-# Nitter 实例列表
 NITTER_INSTANCES = [
     "https://nitter.meowing.monster",
     "https://nitter.kareem.one",
@@ -41,20 +38,14 @@ DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 
 SEEN_FILE = Path("seen.json")
 MAX_SEEN_KEEP = 5000
-
-# 是否排除回复
 EXCLUDE_REPLIES = True
-
-# 方法2：关闭首次只记录模式，会推送当前推文
-FIRST_RUN_ONLY_RECORD = False
 
 # ==================== 工具函数 ====================
 
 def load_seen() -> Set[str]:
     if SEEN_FILE.exists():
         try:
-            data = json.loads(SEEN_FILE.read_text(encoding="utf-8"))
-            return set(data)
+            return set(json.loads(SEEN_FILE.read_text(encoding="utf-8")))
         except Exception as e:
             print(f"[警告] 读取 seen.json 失败: {e}")
     return set()
@@ -62,10 +53,7 @@ def load_seen() -> Set[str]:
 
 def save_seen(seen: Set[str]):
     ordered = list(seen)[-MAX_SEEN_KEEP:]
-    SEEN_FILE.write_text(
-        json.dumps(ordered, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    SEEN_FILE.write_text(json.dumps(ordered, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[信息] 已保存 {len(ordered)} 条已读记录")
 
 
@@ -80,26 +68,18 @@ def clean_nitter_link(link: str) -> str:
     if not link:
         return link
     link = re.sub(r"https?://[^/]+/", "https://x.com/", link)
-    link = link.split("?")[0].split("#")[0]
-    return link
+    return link.split("?")[0].split("#")[0]
 
 
 def send_to_discord(username: str, title: str, link: str, content: str, published: Optional[str] = None):
-    """发送 Embed 到 Discord"""
     if not DISCORD_WEBHOOK:
         print("[错误] 未设置 DISCORD_WEBHOOK")
         return
 
-    # 清理 HTML
     if content:
         content = re.sub(r"<[^>]+>", "", content)
-        content = (content
-                   .replace("&amp;", "&")
-                   .replace("&lt;", "<")
-                   .replace("&gt;", ">")
-                   .replace("&quot;", '"')
-                   .replace("&#39;", "'")
-                   .strip())
+        content = (content.replace("&amp;", "&").replace("&lt;", "<")
+                   .replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'").strip())
     else:
         content = ""
 
@@ -107,17 +87,12 @@ def send_to_discord(username: str, title: str, link: str, content: str, publishe
     description = (content[:4000] if content else "（无文字内容）") or "（无文字内容）"
 
     embed = {
-        "author": {
-            "name": f"@{username}",
-            "url": f"https://x.com/{username}"
-        },
+        "author": {"name": f"@{username}", "url": f"https://x.com/{username}"},
         "title": title,
         "url": link,
         "description": description,
         "color": 1942002,
-        "footer": {
-            "text": "X Monitor · GitHub Actions"
-        }
+        "footer": {"text": "X Monitor · GitHub Actions"}
     }
 
     if published:
@@ -138,9 +113,9 @@ def send_to_discord(username: str, title: str, link: str, content: str, publishe
         if resp.status_code in (200, 204):
             print(f"  ✅ 已推送: {link}")
         else:
-            print(f"  ❌ Discord 返回 {resp.status_code}: {resp.text[:400]}")
+            print(f"  ❌ Discord 返回 {resp.status_code}: {resp.text[:300]}")
     except Exception as e:
-        print(f"  ❌ 发送 Discord 异常: {e}")
+        print(f"  ❌ 发送异常: {e}")
 
 
 def fetch_rss_entries(username: str) -> List:
@@ -148,16 +123,12 @@ def fetch_rss_entries(username: str) -> List:
         rss_url = f"{base.rstrip('/')}/{username}/rss"
         try:
             print(f"  尝试 {rss_url}")
-            feed = feedparser.parse(
-                rss_url,
-                request_headers={"User-Agent": "Mozilla/5.0 (compatible; X-Monitor/1.0)"}
-            )
+            feed = feedparser.parse(rss_url, request_headers={"User-Agent": "Mozilla/5.0 (compatible; X-Monitor/1.0)"})
             if feed.entries:
                 print(f"    成功获取 {len(feed.entries)} 条")
                 return feed.entries
         except Exception as e:
             print(f"    失败: {e}")
-            continue
     print(f"  所有实例均失败: @{username}")
     return []
 
@@ -171,11 +142,10 @@ def main():
     print("=" * 55)
 
     if not DISCORD_WEBHOOK:
-        print("❌ 错误：请在 GitHub Secrets 中设置 DISCORD_WEBHOOK")
+        print("❌ 错误：请设置 DISCORD_WEBHOOK")
         return
-
     if not ACCOUNTS:
-        print("❌ 错误：ACCOUNTS 列表为空")
+        print("❌ 错误：ACCOUNTS 为空")
         return
 
     seen = load_seen()
@@ -202,7 +172,6 @@ def main():
             content = entry.get("summary") or entry.get("description") or ""
             published = entry.get("published") or entry.get("updated")
 
-            # 过滤回复
             if EXCLUDE_REPLIES:
                 text_check = (title + " " + content).strip()
                 if text_check.startswith("@"):
