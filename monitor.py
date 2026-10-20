@@ -3,7 +3,7 @@
 """
 X (Twitter) 账号监听 → Discord
 使用 GitHub Actions + Nitter RSS，完全免费
-已修复 Discord 400 embeds 错误
+方法2版本：会推送当前最新推文（用于测试）
 """
 
 import os
@@ -14,7 +14,7 @@ import feedparser
 import requests
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Set, List, Dict, Optional
+from typing import Set, List, Optional
 from email.utils import parsedate_to_datetime
 
 # ==================== 配置区 ====================
@@ -28,7 +28,7 @@ ACCOUNTS = [
     # 在这里继续添加你的账号...
 ]
 
-# Nitter 实例列表（可随时更新）
+# Nitter 实例列表
 NITTER_INSTANCES = [
     "https://nitter.meowing.monster",
     "https://nitter.kareem.one",
@@ -45,9 +45,8 @@ MAX_SEEN_KEEP = 5000
 # 是否排除回复
 EXCLUDE_REPLIES = True
 
-# 首次运行时只记录不推送（防止历史推文刷屏）
-# 第一次跑完后把这个改成 False，或者删除这行判断
-FIRST_RUN_ONLY_RECORD = True
+# 方法2：关闭首次只记录模式，会推送当前推文
+FIRST_RUN_ONLY_RECORD = False
 
 # ==================== 工具函数 ====================
 
@@ -86,12 +85,12 @@ def clean_nitter_link(link: str) -> str:
 
 
 def send_to_discord(username: str, title: str, link: str, content: str, published: Optional[str] = None):
-    """发送 Embed 到 Discord（已修复 400 错误）"""
+    """发送 Embed 到 Discord"""
     if not DISCORD_WEBHOOK:
         print("[错误] 未设置 DISCORD_WEBHOOK")
         return
 
-    # 清理 HTML 和特殊字符
+    # 清理 HTML
     if content:
         content = re.sub(r"<[^>]+>", "", content)
         content = (content
@@ -115,13 +114,12 @@ def send_to_discord(username: str, title: str, link: str, content: str, publishe
         "title": title,
         "url": link,
         "description": description,
-        "color": 1942002,  # X 蓝色
+        "color": 1942002,
         "footer": {
             "text": "X Monitor · GitHub Actions"
         }
     }
 
-    # 安全处理时间戳
     if published:
         try:
             dt = parsedate_to_datetime(published)
@@ -183,11 +181,6 @@ def main():
     seen = load_seen()
     print(f"当前已记录推文数: {len(seen)}")
 
-    is_first_run = len(seen) == 0 and FIRST_RUN_ONLY_RECORD
-    if is_first_run:
-        print("⚠️  检测到首次运行，本次只记录推文ID，不推送到 Discord（防止刷屏）")
-        print("    下次运行就会正常推送新推文")
-
     new_count = 0
 
     for username in ACCOUNTS:
@@ -218,24 +211,15 @@ def main():
                     continue
 
             clean_link = clean_nitter_link(link)
-
-            if is_first_run:
-                # 首次运行只记录
-                print(f"  记录（不推送）: {tweet_id}")
-            else:
-                send_to_discord(username, title, clean_link, content, published)
-                new_count += 1
-                time.sleep(1.5)  # 防止 Discord 限流
-
+            send_to_discord(username, title, clean_link, content, published)
             seen.add(tweet_id)
+            new_count += 1
+            time.sleep(1.5)
 
     save_seen(seen)
 
     print("\n" + "=" * 55)
-    if is_first_run:
-        print("首次运行完成，已记录历史推文。下次运行将开始正常推送新内容。")
-    else:
-        print(f"本轮完成，新推送 {new_count} 条")
+    print(f"本轮完成，新推送 {new_count} 条")
     print("=" * 55)
 
 
