@@ -3,6 +3,7 @@
 """
 X (Twitter) 账号监听 → Discord
 使用 GitHub Actions + Nitter RSS，完全免费
+已修复 Discord 400 embeds 错误
 """
 
 import os
@@ -14,22 +15,20 @@ import requests
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Set, List, Dict, Optional
+from email.utils import parsedate_to_datetime
 
 # ==================== 配置区 ====================
 
-# 要监听的账号（不加 @，最多建议 50 个）
+# 要监听的账号（不加 @）
 ACCOUNTS = [
     "eloscapeHQ",
     "kalosfun",
     "ChainzyLabs",
     "SignalFam",
-    "ThePhunky1",
-    "Bunnypadfun",
-    # 继续添加你的账号...
+    # 在这里继续添加你的账号...
 ]
 
-# Nitter 实例列表（优先使用还支持 RSS 的）
-# 可随时去 https://status.d420.de 查看最新可用实例并更新这里
+# Nitter 实例列表（可随时更新）
 NITTER_INSTANCES = [
     "https://nitter.meowing.monster",
     "https://nitter.kareem.one",
@@ -38,15 +37,17 @@ NITTER_INSTANCES = [
     "https://nitter.jaydenha.uk",
 ]
 
-# Discord Webhook（从环境变量读取，不要写死在代码里）
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 
-# 已发送记录文件
 SEEN_FILE = Path("seen.json")
-MAX_SEEN_KEEP = 5000          # 最多保留多少条已读 ID
+MAX_SEEN_KEEP = 5000
 
-# 是否排除回复（True = 不推送以 @ 开头的回复）
+# 是否排除回复
 EXCLUDE_REPLIES = True
+
+# 首次运行时只记录不推送（防止历史推文刷屏）
+# 第一次跑完后把这个改成 False，或者删除这行判断
+FIRST_RUN_ONLY_RECORD = True
 
 # ==================== 工具函数 ====================
 
@@ -61,7 +62,6 @@ def load_seen() -> Set[str]:
 
 
 def save_seen(seen: Set[str]):
-    # 只保留最近的记录，防止文件无限变大
     ordered = list(seen)[-MAX_SEEN_KEEP:]
     SEEN_FILE.write_text(
         json.dumps(ordered, ensure_ascii=False, indent=2),
@@ -71,57 +71,62 @@ def save_seen(seen: Set[str]):
 
 
 def extract_tweet_id(link: str) -> Optional[str]:
-    """从链接中提取推文 ID"""
     if not link:
         return None
-    # 匹配 /status/数字
     m = re.search(r"/status/(\d+)", link)
-    if m:
-        return m.group(1)
-    return None
+    return m.group(1) if m else None
 
 
 def clean_nitter_link(link: str) -> str:
-    """把 Nitter 链接转成正常 x.com 链接"""
     if not link:
         return link
-    # 去掉实例域名，换成 x.com
     link = re.sub(r"https?://[^/]+/", "https://x.com/", link)
-    # 去掉可能的 /rss 等后缀
     link = link.split("?")[0].split("#")[0]
     return link
 
 
 def send_to_discord(username: str, title: str, link: str, content: str, published: Optional[str] = None):
-    """发送美观的 Embed 到 Discord"""
+    """发送 Embed 到 Discord（已修复 400 错误）"""
     if not DISCORD_WEBHOOK:
         print("[错误] 未设置 DISCORD_WEBHOOK")
         return
 
-    # 清理内容（去掉 HTML 标签）
+    # 清理 HTML 和特殊字符
     if content:
         content = re.sub(r"<[^>]+>", "", content)
-        content = content.strip()
+        content = (content
+                   .replace("&amp;", "&")
+                   .replace("&lt;", "<")
+                   .replace("&gt;", ">")
+                   .replace("&quot;", '"')
+                   .replace("&#39;", "'")
+                   .strip())
+    else:
+        content = ""
+
+    title = (title or "新推文").strip()[:256] or "新推文"
+    description = (content[:4000] if content else "（无文字内容）") or "（无文字内容）"
 
     embed = {
         "author": {
             "name": f"@{username}",
             "url": f"https://x.com/{username}"
         },
-        "title": (title or "新推文")[:256],
+        "title": title,
         "url": link,
-        "description": (content or "（无文字内容）")[:4000],
-        "color": 0x1DA1F2,  # X 蓝色
+        "description": description,
+        "color": 1942002,  # X 蓝色
         "footer": {
             "text": "X Monitor · GitHub Actions"
         }
     }
 
+    # 安全处理时间戳
     if published:
         try:
-            # 尝试转成 ISO 格式
-            embed["timestamp"] = published
-        except:
+            dt = parsedate_to_datetime(published)
+            embed["timestamp"] = dt.astimezone(timezone.utc).isoformat()
+        except Exception:
             pass
 
     payload = {
@@ -135,32 +140,26 @@ def send_to_discord(username: str, title: str, link: str, content: str, publishe
         if resp.status_code in (200, 204):
             print(f"  ✅ 已推送: {link}")
         else:
-            print(f"  ❌ Discord 返回 {resp.status_code}: {resp.text[:200]}")
+            print(f"  ❌ Discord 返回 {resp.status_code}: {resp.text[:400]}")
     except Exception as e:
         print(f"  ❌ 发送 Discord 异常: {e}")
 
 
-def fetch_rss_entries(username: str) -> List[Dict]:
-    """从多个 Nitter 实例尝试获取 RSS"""
+def fetch_rss_entries(username: str) -> List:
     for base in NITTER_INSTANCES:
         rss_url = f"{base.rstrip('/')}/{username}/rss"
         try:
             print(f"  尝试 {rss_url}")
-            feed = feedparser.parse(rss_url, request_headers={
-                "User-Agent": "Mozilla/5.0 (compatible; X-Monitor/1.0)"
-            })
-
-            if feed.bozo and not feed.entries:
-                print(f"    解析失败或无内容")
-                continue
-
+            feed = feedparser.parse(
+                rss_url,
+                request_headers={"User-Agent": "Mozilla/5.0 (compatible; X-Monitor/1.0)"}
+            )
             if feed.entries:
                 print(f"    成功获取 {len(feed.entries)} 条")
                 return feed.entries
         except Exception as e:
-            print(f"    请求失败: {e}")
+            print(f"    失败: {e}")
             continue
-
     print(f"  所有实例均失败: @{username}")
     return []
 
@@ -168,10 +167,10 @@ def fetch_rss_entries(username: str) -> List[Dict]:
 # ==================== 主程序 ====================
 
 def main():
-    print("=" * 50)
+    print("=" * 55)
     print(f"开始运行 X Monitor  {datetime.now(timezone.utc).isoformat()}")
     print(f"监听账号数量: {len(ACCOUNTS)}")
-    print("=" * 50)
+    print("=" * 55)
 
     if not DISCORD_WEBHOOK:
         print("❌ 错误：请在 GitHub Secrets 中设置 DISCORD_WEBHOOK")
@@ -184,6 +183,11 @@ def main():
     seen = load_seen()
     print(f"当前已记录推文数: {len(seen)}")
 
+    is_first_run = len(seen) == 0 and FIRST_RUN_ONLY_RECORD
+    if is_first_run:
+        print("⚠️  检测到首次运行，本次只记录推文ID，不推送到 Discord（防止刷屏）")
+        print("    下次运行就会正常推送新推文")
+
     new_count = 0
 
     for username in ACCOUNTS:
@@ -194,39 +198,45 @@ def main():
         print(f"\n检查 @{username} ...")
         entries = fetch_rss_entries(username)
 
-        # 从旧到新处理，避免乱序
         for entry in reversed(entries):
             link = entry.get("link") or entry.get("id") or ""
             tweet_id = extract_tweet_id(link)
 
-            if not tweet_id:
-                continue
-
-            if tweet_id in seen:
+            if not tweet_id or tweet_id in seen:
                 continue
 
             title = entry.get("title", "")
             content = entry.get("summary") or entry.get("description") or ""
             published = entry.get("published") or entry.get("updated")
 
-            # 简单过滤回复
-            if EXCLUDE_REPLIES and (title.startswith("@") or content.strip().startswith("@")):
-                print(f"  跳过回复: {tweet_id}")
-                seen.add(tweet_id)  # 也记录下来，避免反复检查
-                continue
+            # 过滤回复
+            if EXCLUDE_REPLIES:
+                text_check = (title + " " + content).strip()
+                if text_check.startswith("@"):
+                    print(f"  跳过回复: {tweet_id}")
+                    seen.add(tweet_id)
+                    continue
 
             clean_link = clean_nitter_link(link)
-            send_to_discord(username, title, clean_link, content, published)
-            seen.add(tweet_id)
-            new_count += 1
 
-            # 避免 Discord 限流
-            time.sleep(1.2)
+            if is_first_run:
+                # 首次运行只记录
+                print(f"  记录（不推送）: {tweet_id}")
+            else:
+                send_to_discord(username, title, clean_link, content, published)
+                new_count += 1
+                time.sleep(1.5)  # 防止 Discord 限流
+
+            seen.add(tweet_id)
 
     save_seen(seen)
-    print("\n" + "=" * 50)
-    print(f"本轮完成，新推送 {new_count} 条")
-    print("=" * 50)
+
+    print("\n" + "=" * 55)
+    if is_first_run:
+        print("首次运行完成，已记录历史推文。下次运行将开始正常推送新内容。")
+    else:
+        print(f"本轮完成，新推送 {new_count} 条")
+    print("=" * 55)
 
 
 if __name__ == "__main__":
